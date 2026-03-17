@@ -29,7 +29,6 @@ from bs4 import BeautifulSoup
 # ─────────────────────────── Configuration ───────────────────────────────────
 
 BASE_URL = "https://books.toscrape.com/"
-CATALOGUE_URL = "https://books.toscrape.com/catalogue/"
 
 # Polite delay between HTTP requests (seconds)
 REQUEST_DELAY = 0.5
@@ -55,12 +54,9 @@ log = logging.getLogger(__name__)
 
 
 def get_soup(url: str, session: requests.Session) -> BeautifulSoup:
-    """
-    Fetch *url* and return a BeautifulSoup object.
-    Raises an exception if the HTTP request fails.
-    """
+
     response = session.get(url, timeout=15)
-    response.raise_for_status()       # raises HTTPError for 4xx / 5xx
+    response.raise_for_status()       # raises HTTPError
 
     response.encoding = "utf-8"  # ensure correct encoding for BeautifulSoup
     return BeautifulSoup(response.text, "html.parser")
@@ -69,13 +65,7 @@ def get_soup(url: str, session: requests.Session) -> BeautifulSoup:
 
 
 def iter_listing_pages(session: requests.Session):
-    """
-    Generator that yields a BeautifulSoup object for every catalogue listing
-    page, starting at page 1 and following 'next' links until none remain.
 
-    No page numbers are hard-coded; the loop stops automatically when the
-    'next' button disappears from the page.
-    """
     # The first listing page has a different URL pattern from subsequent pages
     current_url = BASE_URL
 
@@ -100,9 +90,7 @@ def iter_listing_pages(session: requests.Session):
 
 
 def extract_book_urls(listing_soup: BeautifulSoup, page_url: str) -> list[str]:
-    """
-    Return absolute detail-page URLs for every book on a single listing page.
-    """
+
     urls = []
     for article in listing_soup.select("article.product_pod"):
         # The <a> href is relative to the catalogue directory
@@ -114,7 +102,6 @@ def extract_book_urls(listing_soup: BeautifulSoup, page_url: str) -> list[str]:
 # ─────────────────────────── Detail page parsing ─────────────────────────────
 
 
-# The site stores the star rating as a CSS class name (e.g. class="star-rating Three")
 RATING_MAP = {"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5}
 
 
@@ -125,23 +112,16 @@ def parse_detail_page(url: str, session: requests.Session) -> dict:
     """
     soup = get_soup(url, session)
 
-    # ── Title ──────────────────────────────────────────────────────────────
     name = soup.select_one("div.product_main > h1").get_text(strip=True)
-
-    # ── Star rating ────────────────────────────────────────────────────────
-    # <p class="star-rating Three"> → we want the second class token
     rating_tag = soup.select_one("p.star-rating")
     rating = 0
     if rating_tag:
-        classes = rating_tag.get("class", [])        # ['star-rating', 'Three']
+        classes = rating_tag.get("class", [])
         for cls in classes:
             if cls in RATING_MAP:
                 rating = RATING_MAP[cls]
                 break
 
-    # ── Product information table ──────────────────────────────────────────
-    # Rows: UPC | Product Type | Price (excl. tax) | Price (incl. tax) |
-    #       Tax | Availability | Number of reviews
     table_data = {}
     for row in soup.select("table.table-striped tr"):
         header = row.select_one("th").get_text(strip=True)
@@ -153,16 +133,13 @@ def parse_detail_page(url: str, session: requests.Session) -> dict:
     upc = table_data.get("UPC", "N/A")
     availability = table_data.get("Availability", "N/A")
 
-    # ── Description ────────────────────────────────────────────────────────
-    # The description sits in the <p> immediately after #product_description
-    # Some books have no description at all
     desc_tag = soup.select_one("div#product_description ~ p")
     description = desc_tag.get_text(strip=True) if desc_tag else ""
 
     return {
         "name":         name,
         "url":          url,
-        "scrape_date":  date.today().isoformat(),   # e.g. "2026-03-17"
+        "scrape_date":  date.today().isoformat(),
         "description":  description,
         "price":        price,
         "tax":          tax,
@@ -175,15 +152,12 @@ def parse_detail_page(url: str, session: requests.Session) -> dict:
 
 
 def save_json(books: list[dict], filepath: str) -> None:
-    """Write the full list of book dicts to a JSON file (UTF-8, indented)."""
     with open(filepath, "w", encoding="utf-8") as fh:
         json.dump(books, fh, ensure_ascii=False, indent=2)
     log.info("JSON saved → %s  (%d records)", filepath, len(books))
 
 
 def save_csv(books: list[dict], filepath: str) -> None:
-    """Write the full list of book dicts to a CSV file (UTF-8 with BOM
-    for Excel compatibility)."""
     with open(filepath, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         writer.writeheader()
@@ -208,7 +182,6 @@ def main() -> None:
             )
         })
 
-        # ── Step 1: Walk every listing page and collect detail URLs ─────────
         detail_urls: list[str] = []
         for page_soup, page_url in iter_listing_pages(session):
             urls = extract_book_urls(page_soup, page_url)
@@ -217,18 +190,15 @@ def main() -> None:
 
         log.info("Total books discovered: %d", len(detail_urls))
 
-        # ── Step 2: Visit each detail page and extract data ─────────────────
         for idx, url in enumerate(detail_urls, start=1):
             log.info("[%d/%d] Scraping: %s", idx, len(detail_urls), url)
             try:
                 book_data = parse_detail_page(url, session)
                 all_books.append(book_data)
             except Exception as exc:
-                # Log the error but keep going so one bad page doesn't abort
                 log.error("  Failed to scrape %s: %s", url, exc)
-            time.sleep(REQUEST_DELAY)   # be polite to the server
+            time.sleep(REQUEST_DELAY)
 
-    # ── Step 3: Save results ─────────────────────────────────────────────────
     save_json(all_books, OUTPUT_JSON)
     save_csv(all_books,  OUTPUT_CSV)
 
